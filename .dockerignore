@@ -1,0 +1,11 @@
+venv
+venv2
+__pycache__
+*.onnx
+*.tflite
+*.wav
+*.mp3
+*.mp4
+build
+assets
+model
