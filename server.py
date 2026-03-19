@@ -1,3 +1,5 @@
+print("NEW DEPLOY VERSION")
+print("DEPLOY CHECK 123")
 import os
 import logging
 import tempfile
@@ -165,3 +167,4 @@ def analyze_url():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
+
