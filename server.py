@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import requests
 import yt_dlp
+import time
 
 from flask import Flask, request, jsonify
 
@@ -15,13 +16,42 @@ logger = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("PORT", 10000))
 
-# Hugging Face API
-HF_API_URL = "https://api-infernece.huggingface.co/models/selva58/ai-voice-detector"
+# Hugging Face API (FIXED URL)
+HF_API_URL = "https://api-inference.huggingface.co/models/selva58/ai-voice-detector"
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 headers = {
     "Authorization": f"Bearer {HF_TOKEN}"
 }
+
+
+# -------- HELPER FUNCTION (IMPORTANT) --------
+def query_huggingface(audio_bytes):
+    for attempt in range(5):
+        try:
+            response = requests.post(
+                HF_API_URL,
+                headers=headers,
+                data=audio_bytes,
+                timeout=60
+            )
+
+            result = response.json()
+
+            # Handle model loading
+            if "error" in result:
+                if "loading" in result["error"].lower():
+                    logger.info(f"Model loading... retry {attempt+1}")
+                    time.sleep(5)
+                    continue
+
+            return result
+
+        except Exception as e:
+            logger.error(f"HF request error: {e}")
+            time.sleep(3)
+
+    return {"error": "Model failed after retries"}
 
 
 @app.route("/")
@@ -34,6 +64,9 @@ def home():
 def analyze_audio():
 
     try:
+        if not HF_TOKEN:
+            return jsonify({"error": "HF_TOKEN not set"}), 500
+
         if 'file' not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
 
@@ -51,7 +84,12 @@ def analyze_audio():
             ["ffmpeg", "-y", "-i", temp_file_path, "-ac", "1", "-ar", "16000", wav_file],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=True
         )
+        # ✅ ADD THIS CHECK
+        if not os.path.exists(wav_file):
+            logger.error("FFmpeg failed to create WAV file")
+            return jsonify({"error": "Audio conversion failed"}), 500
 
         os.remove(temp_file_path)
 
@@ -60,14 +98,8 @@ def analyze_audio():
 
         os.remove(wav_file)
 
-        # Send to Hugging Face model
-        response = requests.post(
-            HF_API_URL,
-            headers=headers,
-            data=audio_bytes
-        )
-
-        result = response.json()
+        # 🔥 Use retry function
+        result = query_huggingface(audio_bytes)
 
         logger.info(f"Model response: {result}")
 
@@ -83,6 +115,9 @@ def analyze_audio():
 def analyze_url():
 
     try:
+        if not HF_TOKEN:
+            return jsonify({"error": "HF_TOKEN not set"}), 500
+
         data = request.get_json()
 
         if not data or "url" not in data:
@@ -102,7 +137,7 @@ def analyze_url():
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            ydl.extract_info(url, download=True)
 
         audio_file = None
 
@@ -118,14 +153,8 @@ def analyze_url():
 
         shutil.rmtree(temp_dir)
 
-        # Send audio to Hugging Face
-        response = requests.post(
-            HF_API_URL,
-            headers=headers,
-            data=audio_bytes
-        )
-
-        result = response.json()
+        # 🔥 Use retry function
+        result = query_huggingface(audio_bytes)
 
         return jsonify(result)
 
