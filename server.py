@@ -39,7 +39,10 @@ def query_huggingface(audio_bytes):
             try:
                 result = response.json()
             except ValueError:
-                return {"error": "Invalid API response from Hugging Face"}
+                # 🔥 NEW: Show exactly what Hugging Face sent back
+                error_details = f"HF Status {response.status_code}: {response.text[:200]}"
+                logger.error(error_details)
+                return {"error": error_details}
 
             if isinstance(result, dict) and "error" in result:
                 if "loading" in result["error"].lower():
