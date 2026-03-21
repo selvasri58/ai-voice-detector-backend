@@ -51,10 +51,15 @@ def query_huggingface(audio_bytes):
             logger.error(f"HF request error: {e}")
             time.sleep(3)
     return {"error": "Model failed after retries"}
-
 @app.route("/")
 def home():
     token = os.environ.get("HF_TOKEN")
+    
+    # Grab all the keys (names) of the environment variables Render is providing
+    # We only grab the names, NOT the secret values, to keep it secure!
+    env_keys = list(os.environ.keys())
+    logger.info(f"RENDER PROVIDED THESE KEYS: {env_keys}")
+    
     if token:
         logger.info(f"Token loaded successfully! Starts with: {token[:5]}") 
         return jsonify({
@@ -62,10 +67,11 @@ def home():
             "token_status": "Loaded correctly!"
         })
     else:
-        logger.error("🚨 ERROR: TOKEN IS MISSING FROM RENDER ENVIRONMENT!")
+        logger.error("🚨 ERROR: TOKEN IS MISSING!")
         return jsonify({
             "status": "AI Voice Detector API Running", 
-            "token_status": "MISSING! Add HF_TOKEN to Render Environment Variables."
+            "token_status": "MISSING!",
+            "render_is_seeing_these_variables": env_keys
         })
 
 @app.route("/analyze", methods=["POST"])
