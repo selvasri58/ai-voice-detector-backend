@@ -48,6 +48,12 @@ def query_huggingface(audio_bytes):
 
 @app.route("/")
 def home():
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        print(f"Token found! Starts with: {token[:5]}") 
+    else:
+        print("TOKEN IS STILL MISSING!")
+        
     return jsonify({"status": "AI Voice Detector API Running"})
 
 @app.route("/analyze", methods=["POST"])
