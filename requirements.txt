@@ -1,4 +1,5 @@
-flask
+Flask==3.0.0
+yt-dlp==2023.12.30
+imageio-ffmpeg==0.4.9
 requests
-yt-dlp
 gunicorn
