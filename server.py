@@ -7,7 +7,7 @@ import shutil
 import requests
 import yt_dlp
 import time
-import imageio_ffmpeg # 🔥 NEW: Bundled FFmpeg
+import imageio_ffmpeg 
 
 from flask import Flask, request, jsonify
 
@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 PORT = int(os.environ.get("PORT", 10000))
 HF_API_URL = "https://api-inference.huggingface.co/models/selva58/ai-voice-detector"
 
+# Change it back to this:
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
 def query_huggingface(audio_bytes):
-    hf_token = os.environ.get("HF_TOKEN")
-    headers = {"Authorization": f"Bearer {hf_token}"}
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     
     for attempt in range(5):
         try:
@@ -49,19 +51,11 @@ def query_huggingface(audio_bytes):
 
 @app.route("/")
 def home():
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        print(f"Token found! Starts with: {token[:5]}") 
-    else:
-        print("TOKEN IS STILL MISSING!")
-        
+    print(f"Using hardcoded token! Starts with: {HF_TOKEN[:5]}") 
     return jsonify({"status": "AI Voice Detector API Running"})
 
 @app.route("/analyze", methods=["POST"])
 def analyze_audio():
-    if not os.environ.get("HF_TOKEN"):
-        return jsonify({"error": "HF_TOKEN not set in environment variables"}), 500
-
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -75,7 +69,6 @@ def analyze_audio():
         file.save(temp_file_path)
         wav_file = temp_file_path + "_converted.wav"
 
-        # 🔥 Retrieve the bundled FFmpeg path
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
 
         subprocess.run(
@@ -105,9 +98,6 @@ def analyze_audio():
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    if not os.environ.get("HF_TOKEN"):
-        return jsonify({"error": "HF_TOKEN not set in environment variables"}), 500
-
     data = request.get_json()
     if not data or "url" not in data:
         return jsonify({"error": "URL missing"}), 400
@@ -116,12 +106,12 @@ def analyze_url():
     temp_dir = tempfile.mkdtemp()
 
     try:
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe() # 🔥 Get bundled path
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe() 
         
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
             "format": "bestaudio/best",
-            "ffmpeg_location": ffmpeg_path, # 🔥 Point yt-dlp to bundled ffmpeg
+            "ffmpeg_location": ffmpeg_path, 
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
