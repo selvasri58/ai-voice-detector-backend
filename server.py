@@ -18,11 +18,14 @@ logger = logging.getLogger(__name__)
 PORT = int(os.environ.get("PORT", 10000))
 HF_API_URL = "https://api-inference.huggingface.co/models/selva58/ai-voice-detector"
 
-# Change it back to this:
-HF_TOKEN = os.environ.get("HF_TOKEN")
-
 def query_huggingface(audio_bytes):
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    # Fetch token securely at runtime
+    hf_token = os.environ.get("HF_TOKEN")
+    
+    if not hf_token:
+        return {"error": "Server configuration error: HF_TOKEN is missing"}
+
+    headers = {"Authorization": f"Bearer {hf_token}"}
     
     for attempt in range(5):
         try:
@@ -51,11 +54,25 @@ def query_huggingface(audio_bytes):
 
 @app.route("/")
 def home():
-    print(f"Using hardcoded token! Starts with: {HF_TOKEN[:5]}") 
-    return jsonify({"status": "AI Voice Detector API Running"})
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        logger.info(f"Token loaded successfully! Starts with: {token[:5]}") 
+        return jsonify({
+            "status": "AI Voice Detector API Running", 
+            "token_status": "Loaded correctly!"
+        })
+    else:
+        logger.error("🚨 ERROR: TOKEN IS MISSING FROM RENDER ENVIRONMENT!")
+        return jsonify({
+            "status": "AI Voice Detector API Running", 
+            "token_status": "MISSING! Add HF_TOKEN to Render Environment Variables."
+        })
 
 @app.route("/analyze", methods=["POST"])
 def analyze_audio():
+    if not os.environ.get("HF_TOKEN"):
+        return jsonify({"error": "HF_TOKEN not set in environment variables"}), 500
+
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -98,6 +115,9 @@ def analyze_audio():
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
+    if not os.environ.get("HF_TOKEN"):
+        return jsonify({"error": "HF_TOKEN not set in environment variables"}), 500
+
     data = request.get_json()
     if not data or "url" not in data:
         return jsonify({"error": "URL missing"}), 400
