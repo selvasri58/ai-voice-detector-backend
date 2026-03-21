@@ -7,6 +7,7 @@ import shutil
 import requests
 import yt_dlp
 import time
+import imageio_ffmpeg # 🔥 NEW: Bundled FFmpeg
 
 from flask import Flask, request, jsonify
 
@@ -74,8 +75,11 @@ def analyze_audio():
         file.save(temp_file_path)
         wav_file = temp_file_path + "_converted.wav"
 
+        # 🔥 Retrieve the bundled FFmpeg path
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+
         subprocess.run(
-            ["ffmpeg", "-y", "-i", temp_file_path, "-ac", "1", "-ar", "16000", wav_file],
+            [ffmpeg_path, "-y", "-i", temp_file_path, "-ac", "1", "-ar", "16000", wav_file],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True
@@ -87,8 +91,6 @@ def analyze_audio():
         result = query_huggingface(audio_bytes)
         return jsonify(result)
 
-    except FileNotFoundError:
-        return jsonify({"error": "FFmpeg is not installed on the server. Please add FFmpeg to Render."}), 500
     except subprocess.CalledProcessError as e:
         return jsonify({"error": f"Audio conversion failed: {e}"}), 500
     except Exception as e:
@@ -114,9 +116,12 @@ def analyze_url():
     temp_dir = tempfile.mkdtemp()
 
     try:
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe() # 🔥 Get bundled path
+        
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
             "format": "bestaudio/best",
+            "ffmpeg_location": ffmpeg_path, # 🔥 Point yt-dlp to bundled ffmpeg
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
@@ -141,7 +146,7 @@ def analyze_url():
         return jsonify(result)
 
     except yt_dlp.utils.DownloadError:
-        return jsonify({"error": "Failed to download video or FFmpeg not installed."}), 500
+        return jsonify({"error": "Failed to download video."}), 500
     except Exception as e:
         logger.error(f"URL analysis error: {e}")
         return jsonify({"error": str(e)}), 500
