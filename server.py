@@ -94,35 +94,45 @@ def analyze_audio():
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
     if not os.environ.get("HF_TOKEN"):
-        return jsonify({"error": "HF_TOKEN not set in environment variables"}), 500
+        return jsonify({"error": "HF_TOKEN missing"}), 500
 
     data = request.get_json()
     if not data or "url" not in data:
         return jsonify({"error": "URL missing"}), 400
 
     url = data["url"]
+    logger.info(f"Processing URL: {url}")
 
     try:
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        # Using a specialized bypass API (Cobalt) with more specific headers
         payload = {
             "url": url,
-            "isAudioOnly": True,
-            "aFormat": "wav"
+            "videoQuality": "720", # Standard for all social platforms
+            "downloadMode": "audio",
+            "audioFormat": "wav"
         }
         
-        response = requests.post("https://api.cobalt.tools/", json=payload, headers=headers)
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        # We try the extraction
+        response = requests.post("https://api.cobalt.tools/api/json", json=payload, headers=headers)
+        
+        # Log the response to see what's happening
+        logger.info(f"Cobalt Status: {response.status_code}")
         
         if response.status_code != 200:
-            return jsonify({"error": f"Extraction API Error: {response.status_code}"}), 500
+            return jsonify({"error": f"Bypass API error: {response.text}"}), 500
             
-        audio_url = response.json().get("url")
+        result_data = response.json()
+        audio_url = result_data.get("url")
+        
         if not audio_url:
-            return jsonify({"error": "No audio link returned from extraction API"}), 500
+            return jsonify({"error": "No download link returned"}), 500
 
+        # Download the actual file to Render
         fd, temp_file_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
 
@@ -132,6 +142,7 @@ def analyze_url():
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
+        # Send to Hugging Face
         result = query_huggingface(temp_file_path)
         
         if os.path.exists(temp_file_path):
@@ -140,7 +151,7 @@ def analyze_url():
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"URL analysis error: {e}")
+        logger.error(f"URL analysis error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
