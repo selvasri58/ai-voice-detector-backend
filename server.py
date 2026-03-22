@@ -113,15 +113,15 @@ def analyze_url():
         
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            "format": "bestaudio/best",
+            # 🔥 FIX: Bulletproof format fallback. 
+            # Grab best audio. If hidden, grab best video and extract audio.
+            "format": "bestaudio/b", 
             "ffmpeg_location": ffmpeg_path, 
-            # 🔥 NEW: The VIP Pass we just created
             "cookiefile": "cookies.txt", 
-            # Keep the stealth options as backup armor
             "nocheckcertificate": True,
             "quiet": True,
             "no_warnings": True,
-            "extractor_args": {"youtube": {"player_client": ["android"]}},
+            # (We deleted the Android player restriction here)
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
