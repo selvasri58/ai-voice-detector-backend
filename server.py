@@ -109,13 +109,13 @@ def analyze_url():
         
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            "format": "bestaudio/best",
+            # 🔥 FIX: We completely deleted the 'format' line. 
+            # yt-dlp will automatically find the best fallback without crashing.
             "ffmpeg_location": ffmpeg_path, 
             "cookiefile": "cookies.txt", 
             "nocheckcertificate": True,
             "quiet": True,
             "no_warnings": True,
-            "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
