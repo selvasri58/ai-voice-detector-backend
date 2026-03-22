@@ -23,13 +23,13 @@ def query_huggingface(audio_file_path):
         return {"error": "Server configuration error: HF_TOKEN is missing"}
 
     try:
-        # 🔥 Fix 1: Changed hf_token=hf_token to token=hf_token
         client = Client(HF_SPACE_URL, token=hf_token)
         
-        # 🔥 Fix 2: Removed "audio_path=" to pass the file safely as a direct argument
+        # 🔥 FIX: Tell Gradio to just run the very first function it has, 
+        # ignoring whatever name it randomly generated.
         result = client.predict(
             handle_file(audio_file_path),
-            api_name="/predict"
+            fn_index=0
         )
         return result
     except Exception as e:
