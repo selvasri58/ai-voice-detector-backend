@@ -3,8 +3,7 @@ import os
 import logging
 import tempfile
 import subprocess
-import shutil
-import yt_dlp
+import requests
 import imageio_ffmpeg 
 from flask import Flask, request, jsonify
 from gradio_client import Client, handle_file 
@@ -102,48 +101,47 @@ def analyze_url():
         return jsonify({"error": "URL missing"}), 400
 
     url = data["url"]
-    temp_dir = tempfile.mkdtemp()
 
     try:
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe() 
-        
-        ydl_opts = {
-            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            "format": "best", 
-            "ffmpeg_location": ffmpeg_path, 
-            "cookiefile": "cookies.txt", 
-            "nocheckcertificate": True,
-            "quiet": True,
-            "no_warnings": True,
-            # 🔥 FIX: Disguise as Safari and Smart TV to bypass the bot check without breaking Shorts formats
-            "extractor_args": {"youtube": {"player_client": ["web_safari", "tv"]}},
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav",
-            }]
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
+        payload = {
+            "url": url,
+            "isAudioOnly": True,
+            "aFormat": "wav"
+        }
+        
+        response = requests.post("https://api.cobalt.tools/", json=payload, headers=headers)
+        
+        if response.status_code != 200:
+            return jsonify({"error": f"Extraction API Error: {response.status_code}"}), 500
+            
+        audio_url = response.json().get("url")
+        if not audio_url:
+            return jsonify({"error": "No audio link returned from extraction API"}), 500
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
+        fd, temp_file_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
 
-        audio_file = None
-        for f in os.listdir(temp_dir):
-            if f.endswith(".wav"):
-                audio_file = os.path.join(temp_dir, f)
+        with requests.get(audio_url, stream=True) as r:
+            r.raise_for_status()
+            with open(temp_file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-        if audio_file is None:
-            return jsonify({"error": "Audio extraction failed"}), 500
-
-        result = query_huggingface(audio_file)
+        result = query_huggingface(temp_file_path)
+        
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+            
         return jsonify(result)
 
-    except yt_dlp.utils.DownloadError:
-        return jsonify({"error": "Failed to download video."}), 500
     except Exception as e:
         logger.error(f"URL analysis error: {e}")
         return jsonify({"error": str(e)}), 500
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
