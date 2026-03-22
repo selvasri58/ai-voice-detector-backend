@@ -83,34 +83,38 @@ def analyze_url():
     temp_dir = tempfile.mkdtemp()
     temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
 
+    # 🔥 LIST OF VERIFIED V10 MIRRORS
+    mirrors = [
+        "https://cobalt.lucas.sh/api/json",
+        "https://cobalt.peris.me/api/json",
+        "https://api.cobalt.tools/api/json" 
+    ]
+
     try:
-        # 🔥 UPDATED: Using a verified v10 community instance
-        # Note: If this instance is busy, others include: https://cobalt.peris.me/api/json
-        COBALT_INSTANCE = "https://cobalt.lucas.sh/api/json"
+        audio_url = None
         
-        payload = {
-            "url": url,
-            "downloadMode": "audio", # v10 uses this for audio-only
-            "audioFormat": "wav"
-        }
-        
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.post(COBALT_INSTANCE, json=payload, headers=headers)
-        
-        if response.status_code != 200:
-            logger.error(f"Bridge API failed ({response.status_code}): {response.text}")
-            return jsonify({"error": "Extraction service error. Please try again."}), 500
-            
-        result_json = response.json()
-        
-        # v10 returns "url" for direct links or "text" for errors
-        audio_url = result_json.get("url")
+        # Try each bridge until one works
+        for mirror in mirrors:
+            try:
+                logger.info(f"Trying bridge: {mirror}")
+                payload = {"url": url, "downloadMode": "audio", "audioFormat": "wav"}
+                headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                
+                response = requests.post(mirror, json=payload, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    audio_url = response.json().get("url")
+                    if audio_url:
+                        logger.info(f"Success with {mirror}!")
+                        break
+                else:
+                    logger.warning(f"Mirror {mirror} returned status {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Mirror {mirror} failed: {str(e)}")
+                continue
+
         if not audio_url:
-            return jsonify({"error": "Could not extract audio link"}), 500
+            return jsonify({"error": "All extraction bridges are currently busy. Try again in 1 minute."}), 503
 
         # Download the file to Render
         with requests.get(audio_url, stream=True) as r:
@@ -119,12 +123,12 @@ def analyze_url():
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # Analyze with AI
+        # Send to Hugging Face
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"URL analysis error: {str(e)}")
+        logger.error(f"Final System Error: {str(e)}")
         return jsonify({"error": "Failed to extract audio from link"}), 500
     finally:
         if os.path.exists(temp_dir):
