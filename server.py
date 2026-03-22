@@ -23,10 +23,7 @@ def query_huggingface(audio_file_path):
         return {"error": "Server configuration error: HF_TOKEN is missing"}
 
     try:
-        # Connect to your Space
         client = Client(HF_SPACE_URL, token=hf_token)
-        
-        # 🔥 EXACT code from your Gradio cheat sheet!
         result = client.predict(
             audio_path=handle_file(audio_file_path),
             api_name="/analyze_audio"
@@ -81,7 +78,6 @@ def analyze_audio():
             check=True
         )
 
-        # Send the file path to Gradio
         result = query_huggingface(wav_file)
         return jsonify(result)
 
@@ -113,15 +109,13 @@ def analyze_url():
         
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            # 🔥 FIX: Bulletproof format fallback. 
-            # Grab best audio. If hidden, grab best video and extract audio.
-            "format": "bestaudio/b", 
+            "format": "bestaudio/best",
             "ffmpeg_location": ffmpeg_path, 
             "cookiefile": "cookies.txt", 
             "nocheckcertificate": True,
             "quiet": True,
             "no_warnings": True,
-            # (We deleted the Android player restriction here)
+            "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
@@ -139,7 +133,6 @@ def analyze_url():
         if audio_file is None:
             return jsonify({"error": "Audio extraction failed"}), 500
 
-        # Send the file path to Gradio
         result = query_huggingface(audio_file)
         return jsonify(result)
 
