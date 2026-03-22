@@ -80,43 +80,46 @@ def analyze_url():
     url = data["url"]
     logger.info(f"Processing URL: {url}")
     
-    # Create a dedicated temp folder for this request
     temp_dir = tempfile.mkdtemp()
     temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
 
     try:
-        # 1. THE BRIDGE: Using the JSON API endpoint
+        # 🔥 UPDATED: Using a verified v10 community instance
+        # Note: If this instance is busy, others include: https://cobalt.peris.me/api/json
+        COBALT_INSTANCE = "https://cobalt.lucas.sh/api/json"
+        
         payload = {
             "url": url,
-            "downloadMode": "audio",
-            "audioFormat": "wav",
-            "vQuality": "720"
+            "downloadMode": "audio", # v10 uses this for audio-only
+            "audioFormat": "wav"
         }
+        
         headers = {
             "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0"
+            "Content-Type": "application/json"
         }
         
-        # We use a reliable instance to bypass blocks
-        response = requests.post("https://api.cobalt.tools/api/json", json=payload, headers=headers)
+        response = requests.post(COBALT_INSTANCE, json=payload, headers=headers)
         
         if response.status_code != 200:
-            logger.error(f"Bypass API error: {response.text}")
-            return jsonify({"error": "Extraction service is busy. Try again in a moment."}), 500
+            logger.error(f"Bridge API failed ({response.status_code}): {response.text}")
+            return jsonify({"error": "Extraction service error. Please try again."}), 500
             
-        audio_url = response.json().get("url")
+        result_json = response.json()
+        
+        # v10 returns "url" for direct links or "text" for errors
+        audio_url = result_json.get("url")
         if not audio_url:
-            return jsonify({"error": "Link extraction failed"}), 500
+            return jsonify({"error": "Could not extract audio link"}), 500
 
-        # 2. THE DOWNLOAD: Stream file directly to Render cloud storage
+        # Download the file to Render
         with requests.get(audio_url, stream=True) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # 3. THE ANALYSIS: Handoff to Hugging Face
+        # Analyze with AI
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
@@ -124,10 +127,8 @@ def analyze_url():
         logger.error(f"URL analysis error: {str(e)}")
         return jsonify({"error": "Failed to extract audio from link"}), 500
     finally:
-        # 4. THE AUTO-DELETE: Cleanup happens no matter what
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             logger.info("Auto-cleanup complete: Local files deleted.")
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
