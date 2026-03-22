@@ -4,77 +4,51 @@ import logging
 import tempfile
 import subprocess
 import shutil
-import requests
 import yt_dlp
-import time
 import imageio_ffmpeg 
-
 from flask import Flask, request, jsonify
+from gradio_client import Client, handle_file 
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("PORT", 10000))
-HF_API_URL = "https://api-inference.huggingface.co/models/selva58/ai-voice-detector"
+HF_SPACE_URL = "selva58/voice-detector-api" 
 
-def query_huggingface(audio_bytes):
-    # Fetch token securely at runtime
+def query_huggingface(audio_file_path):
     hf_token = os.environ.get("HF_TOKEN")
     
     if not hf_token:
         return {"error": "Server configuration error: HF_TOKEN is missing"}
 
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    
-    for attempt in range(5):
-        try:
-            response = requests.post(
-                HF_API_URL,
-                headers=headers,
-                data=audio_bytes,
-                timeout=60
-            )
-            
-            try:
-                result = response.json()
-            except ValueError:
-                # 🔥 NEW: Show exactly what Hugging Face sent back
-                error_details = f"HF Status {response.status_code}: {response.text[:200]}"
-                logger.error(error_details)
-                return {"error": error_details}
+    try:
+        client = Client(HF_SPACE_URL, hf_token=hf_token)
+        result = client.predict(
+            audio_path=handle_file(audio_file_path),
+            api_name="/predict"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Space request error: {e}")
+        return {"error": f"Failed to connect to AI Space: {str(e)}"}
 
-            if isinstance(result, dict) and "error" in result:
-                if "loading" in result["error"].lower():
-                    logger.info(f"Model loading... retry {attempt+1}")
-                    time.sleep(5)
-                    continue
-            return result
-        except Exception as e:
-            logger.error(f"HF request error: {e}")
-            time.sleep(3)
-    return {"error": "Model failed after retries"}
 @app.route("/")
 def home():
     token = os.environ.get("HF_TOKEN")
-    
-    # Grab all the keys (names) of the environment variables Render is providing
-    # We only grab the names, NOT the secret values, to keep it secure!
-    env_keys = list(os.environ.keys())
-    logger.info(f"RENDER PROVIDED THESE KEYS: {env_keys}")
     
     if token:
         logger.info(f"Token loaded successfully! Starts with: {token[:5]}") 
         return jsonify({
             "status": "AI Voice Detector API Running", 
+            "connection": "Connected to Hugging Face Space",
             "token_status": "Loaded correctly!"
         })
     else:
         logger.error("🚨 ERROR: TOKEN IS MISSING!")
         return jsonify({
             "status": "AI Voice Detector API Running", 
-            "token_status": "MISSING!",
-            "render_is_seeing_these_variables": env_keys
+            "token_status": "MISSING!"
         })
 
 @app.route("/analyze", methods=["POST"])
@@ -104,10 +78,7 @@ def analyze_audio():
             check=True
         )
 
-        with open(wav_file, "rb") as f:
-            audio_bytes = f.read()
-
-        result = query_huggingface(audio_bytes)
+        result = query_huggingface(wav_file)
         return jsonify(result)
 
     except subprocess.CalledProcessError as e:
@@ -120,7 +91,6 @@ def analyze_audio():
             os.remove(temp_file_path)
         if 'wav_file' in locals() and os.path.exists(wav_file):
             os.remove(wav_file)
-
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
@@ -158,10 +128,7 @@ def analyze_url():
         if audio_file is None:
             return jsonify({"error": "Audio extraction failed"}), 500
 
-        with open(audio_file, "rb") as f:
-            audio_bytes = f.read()
-
-        result = query_huggingface(audio_bytes)
+        result = query_huggingface(audio_file)
         return jsonify(result)
 
     except yt_dlp.utils.DownloadError:
