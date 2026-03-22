@@ -109,13 +109,14 @@ def analyze_url():
         
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
-            # 🔥 FIX: We completely deleted the 'format' line. 
-            # yt-dlp will automatically find the best fallback without crashing.
+            "format": "best", 
             "ffmpeg_location": ffmpeg_path, 
             "cookiefile": "cookies.txt", 
             "nocheckcertificate": True,
             "quiet": True,
             "no_warnings": True,
+            # 🔥 FIX: Disguise as Safari and Smart TV to bypass the bot check without breaking Shorts formats
+            "extractor_args": {"youtube": {"player_client": ["web_safari", "tv"]}},
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "wav",
