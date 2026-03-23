@@ -74,27 +74,51 @@ import io
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    # ... (Token and URL checks stay the same) ...
+    # 1. Check for HF Token
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        return jsonify({"error": "HF_TOKEN missing in Render settings"}), 500
+
+    # 2. Parse incoming JSON
+    data = request.get_json()
+    if not data or "url" not in data:
+        return jsonify({"error": "URL missing"}), 400
+
+    url = data["url"]
+    
+    # 3. Get RapidAPI Key
+    rapid_api_key = os.environ.get("RAPID_API_KEY") 
+    if not rapid_api_key:
+        return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
 
     try:
+        # 4. Request the conversion link from the YouTube MP3 API
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
-        headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
+        headers = {
+            "x-rapidapi-key": rapid_api_key,
+            "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
+        }
 
-        # 1. Get the Link from RapidAPI
+        logger.info(f"Step 1: Requesting link for {url}")
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
-        download_url = response.json().get("downloadUrl")
+        response.raise_for_status()
+        
+        result_data = response.json()
+        download_url = result_data.get("downloadUrl")
 
         if not download_url:
-            return jsonify({"error": "Bridge link failed"}), 500
+            logger.error(f"API Response missing link: {result_data}")
+            return jsonify({"error": "Could not get download link from API"}), 500
 
-        logger.info(f"Handing remote URL to AI: {download_url}")
+        # 5. Step 2: Pass the URL directly to Hugging Face
+        # This bypasses Render's network restrictions entirely
+        logger.info(f"Step 2: Sending remote URL to AI Space")
         
-        # 2. THE FIX: Wrap the URL in handle_file()
-        # This tells Hugging Face: "Go fetch this file yourself"
-        client = Client(HF_SPACE_URL, token=os.environ.get("HF_TOKEN"))
+        client = Client(HF_SPACE_URL, token=hf_token)
         
+        # handle_file(download_url) tells HF to download the file on its side
         result = client.predict(
-            audio_path=handle_file(download_url), # 🔥 CRITICAL CHANGE
+            audio_path=handle_file(download_url),
             api_name="/analyze_audio"
         )
         
@@ -102,9 +126,7 @@ def analyze_url():
 
     except Exception as e:
         logger.error(f"AI Processing Error: {str(e)}")
-        return jsonify({"error": "AI model failed to process the remote link."}), 500
-    
-
+        return jsonify({"error": f"Process failed: {str(e)}"}), 500
 
 
     
