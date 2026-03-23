@@ -85,76 +85,67 @@ def analyze_url():
     if not rapid_api_key:
         return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
 
-    # 1. Handle YouTube vs Instagram/Others
-    is_youtube = "youtube.com" in url or "youtu.be" in url
-    
     temp_dir = tempfile.mkdtemp()
     temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
 
     try:
-        # Configuration for the specific API from your screenshot
+        # 🔥 UPDATED ENDPOINT: Based on your v3 screenshot
+        api_url = "https://social-media-video-downloader.p.rapidapi.com/v3/video/details"
+        
         headers = {
             "X-RapidAPI-Key": rapid_api_key,
             "X-RapidAPI-Host": "social-media-video-downloader.p.rapidapi.com"
         }
 
-        if is_youtube:
-            video_id = extract_video_id(url)
-            if not video_id:
-                return jsonify({"error": "Invalid YouTube URL"}), 400
-            
-            # Endpoint from your screenshot
-            api_url = "https://social-media-video-downloader.p.rapidapi.com/smvd/get/all"
-            querystring = {"videoId": video_id}
-            response = requests.get(api_url, headers=headers, params=querystring)
-        else:
-            # For Instagram/Other social links, we use the standard URL parameter
-            api_url = "https://social-media-video-downloader.p.rapidapi.com/smvd/get/all"
-            querystring = {"url": url}
-            response = requests.get(api_url, headers=headers, params=querystring)
+        # This API usually takes the full URL as a parameter
+        querystring = {"url": url}
 
+        response = requests.get(api_url, headers=headers, params=querystring)
+        
         if response.status_code != 200:
-            logger.error(f"RapidAPI failed: {response.text}")
-            return jsonify({"error": "Extraction service error"}), 500
+            logger.error(f"RapidAPI failed ({response.status_code}): {response.text}")
+            return jsonify({"error": f"API Error: {response.status_code}"}), 500
 
         result_data = response.json()
         audio_url = None
         
-        # Parsing logic for 'medias' or 'links'
-        links = result_data.get("links", result_data.get("medias", []))
+        # 🔎 NEW PARSING LOGIC: Look inside the 'medias' or 'links' array
+        # v3 APIs often return a list of objects with 'url' and 'quality'
+        medias = result_data.get("medias", result_data.get("links", []))
         
-        # Look for best audio
-        for link in links:
-            if link.get("type") == "audio" or link.get("extension") == "mp3":
-                audio_url = link.get("url")
+        for media in medias:
+            # We want the audio/mp3 version
+            if media.get("extension") == "mp3" or media.get("type") == "audio":
+                audio_url = media.get("url")
                 break
         
-        # Fallback to video if no audio-only link is provided
-        if not audio_url and links:
-            audio_url = links[0].get("url")
+        # Fallback to the first video link if no audio-only found
+        if not audio_url and medias:
+            audio_url = medias[0].get("url")
 
         if not audio_url:
-            return jsonify({"error": "Could not find a downloadable stream"}), 500
+            logger.error(f"Full API Response: {result_data}")
+            return jsonify({"error": "Could not find a download link in the response"}), 500
 
-        # Download to Render Cloud
+        # Download the file to Render's cloud storage
         with requests.get(audio_url, stream=True) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # Handoff to Hugging Face AI
+        # Handoff to Hugging Face
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Failed to process link"}), 500
+        return jsonify({"error": "Internal processing failed"}), 500
     finally:
-        # AUTO-DELETE
+        # 🗑️ AUTO-DELETE: Ensures no files are left on the cloud
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Auto-cleanup complete.")
+            logger.info("Cleanup complete.")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
