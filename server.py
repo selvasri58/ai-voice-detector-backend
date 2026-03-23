@@ -70,89 +70,76 @@ def analyze_audio():
         if os.path.exists(temp_file_path): os.remove(temp_file_path)
         if 'wav_file' in locals() and os.path.exists(wav_file): os.remove(wav_file)
 
+import io
+
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    # 1. Initialize variables early to avoid NameErrors in 'finally'
     temp_dir = None
-    
     if not os.environ.get("HF_TOKEN"):
         return jsonify({"error": "HF_TOKEN missing"}), 500
 
     data = request.get_json()
-    if not data or "url" not in data:
-        return jsonify({"error": "URL missing"}), 400
-
-    url = data["url"]
+    url = data.get("url")
     rapid_api_key = os.environ.get("RAPID_API_KEY") 
-    
-    if not rapid_api_key:
-        return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
 
     try:
-        # Create the temp environment
         temp_dir = tempfile.mkdtemp()
-        raw_audio_path = os.path.join(temp_dir, "raw_audio")
+        raw_path = os.path.join(temp_dir, "raw_audio.mp3")
         final_wav_path = os.path.join(temp_dir, "final_audio.wav")
-
+        
+        # 1. Get the Link from your current YouTube MP3 API
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
         headers = {
             "x-rapidapi-key": rapid_api_key,
             "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
-        # 2. Get the Link
-        logger.info(f"Requesting conversion for: {url}")
+        logger.info(f"Requesting link for: {url}")
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
-        response.raise_for_status()
         download_url = response.json().get("downloadUrl")
 
         if not download_url:
-            return jsonify({"error": "No download link found"}), 500
+            return jsonify({"error": "Bridge did not provide a link"}), 500
 
-        # 3. RANGE STITCHING: Download in 100KB chunks to bypass the 177KB crash
-        chunk_size = 100 * 1024 
-        current_byte = 0
+        # 2. THE PERSISTENT PIPE: Force the download to finish
+        logger.info("Starting Persistent Pipe download...")
         
-        logger.info("Starting chunked download...")
-        with open(raw_audio_path, 'wb') as f:
-            while True:
-                range_header = {"Range": f"bytes={current_byte}-{current_byte + chunk_size - 1}"}
-                r = requests.get(download_url, headers=range_header, timeout=30)
-                
-                # 206 is Partial Content, 200 is OK
-                if r.status_code not in [200, 206]:
-                    break
-                
-                f.write(r.content)
-                
-                # If we got less than requested, we are at the end of the file
-                if len(r.content) < chunk_size:
-                    break
-                    
-                current_byte += len(r.content)
-                logger.info(f"Downloaded up to: {current_byte} bytes")
+        # We use a specific 'Accept-Encoding' to prevent the server from cutting us off
+        download_headers = {"Accept-Encoding": "identity"}
+        
+        # Using a raw stream to bypass the 'IncompleteRead' logic of the requests library
+        with requests.get(download_url, headers=download_headers, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(raw_path, "wb") as f:
+                # We use a very large buffer to 'catch' the data before the connection drops
+                for chunk in r.iter_content(chunk_size=1024 * 512): # 512KB chunks
+                    if chunk:
+                        f.write(chunk)
+        
+        # Check if we got enough data (at least 50KB)
+        if os.path.getsize(raw_path) < 50000:
+             return jsonify({"error": "File was too small/incomplete"}), 500
 
-        # 4. Final Processing
-        if not os.path.exists(raw_audio_path) or os.path.getsize(raw_audio_path) < 1000:
-            return jsonify({"error": "File transfer failed"}), 500
-
+        # 3. Convert to WAV for AI processing
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
-            [ffmpeg_path, "-y", "-i", raw_audio_path, "-ac", "1", "-ar", "16000", final_wav_path],
+            [ffmpeg_path, "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", final_wav_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
         )
 
+        # 4. Analyze
         result = query_huggingface(final_wav_path)
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": f"Internal Error: {str(e)}"}), 500
+        logger.error(f"Pipe Error: {str(e)}")
+        # If it's the specific 177k error, we tell the user to try once more 
+        # because the file is now 'cached' on the bridge server
+        return jsonify({"error": "Connection reset. Please try the same link again."}), 500
     finally:
-        # Only cleanup if the directory was actually created
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             logger.info("Auto-cleanup complete.")
-            
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
