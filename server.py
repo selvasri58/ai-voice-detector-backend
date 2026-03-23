@@ -89,10 +89,7 @@ def analyze_url():
     temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
 
     try:
-        # 🔥 CORRECTED ENDPOINT for the SMVD v3 API
         api_url = "https://social-media-video-downloader.p.rapidapi.com/youtube/v3/video/details"
-        
-        # We need the Video ID for this specific endpoint
         video_id = extract_video_id(url)
         if not video_id:
             return jsonify({"error": "Could not extract YouTube ID"}), 400
@@ -102,49 +99,50 @@ def analyze_url():
             "X-RapidAPI-Host": "social-media-video-downloader.p.rapidapi.com"
         }
 
-        # Based on your screenshot, it needs videoId and optional renderableFormats
         querystring = {
             "videoId": video_id,
-            "renderableFormats": "720p" # This triggers the link generation
+            "renderableFormats": "720p"
         }
 
         response = requests.get(api_url, headers=headers, params=querystring)
         
         if response.status_code != 200:
             logger.error(f"RapidAPI failed ({response.status_code}): {response.text}")
-            return jsonify({"error": f"API Error {response.status_code}: {response.text}"}), 500
+            return jsonify({"error": f"API Error {response.status_code}"}), 500
 
         result_data = response.json()
-        
-        # 🔎 NEW PARSING for the SMVD v3 'contents' structure
-        # This API usually puts links in result_data['contents'][0]['videoStreams']
-        # or result_data['contents'][0]['audioStreams']
         audio_url = None
         contents = result_data.get("contents", [])
         
         if contents:
-            # Check for audios first
             audios = contents[0].get("audios", [])
             if audios:
                 audio_url = audios[0].get("url")
             else:
-                # Fallback to videos
                 videos = contents[0].get("videos", [])
                 if videos:
                     audio_url = videos[0].get("url")
 
         if not audio_url:
-            logger.error(f"Full Response: {result_data}")
-            return jsonify({"error": "No download link found in API response"}), 500
+            return jsonify({"error": "No download link found"}), 500
 
-        # Download to cloud
-        with requests.get(audio_url, stream=True) as r:
+        # 🔥 FIX: Use custom headers to bypass 403 Forbidden Error
+        download_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Referer": "https://www.youtube.com/"
+        }
+
+        # Download the actual file from the extracted link
+        with requests.get(audio_url, stream=True, headers=download_headers, timeout=30, allow_redirects=True) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
 
-        # Analyze
+        # Send for AI Prediction
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
