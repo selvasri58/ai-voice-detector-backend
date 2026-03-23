@@ -80,79 +80,59 @@ def analyze_url():
         return jsonify({"error": "URL missing"}), 400
 
     url = data["url"]
-    rapid_api_key = os.environ.get("RAPID_API_KEY") 
+    rapid_key = os.environ.get("RAPID_API_KEY") 
     
-    if not rapid_api_key:
+    if not rapid_key:
         return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
 
     temp_dir = tempfile.mkdtemp()
-    temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
+    temp_file_path = os.path.join(temp_dir, "cloud_audio.mp3")
 
     try:
-        api_url = "https://social-media-video-downloader.p.rapidapi.com/youtube/v3/video/details"
-        video_id = extract_video_id(url)
-        if not video_id:
-            return jsonify({"error": "Could not extract YouTube ID"}), 400
-
+        # 🔥 THE NEW BRIDGE: Pointing to your YouTube MP3 API
+        api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
+        
         headers = {
-            "X-RapidAPI-Key": rapid_api_key,
-            "X-RapidAPI-Host": "social-media-video-downloader.p.rapidapi.com"
+            "x-rapidapi-key": rapid_key,
+            "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
-        querystring = {
-            "videoId": video_id,
-            "renderableFormats": "720p"
-        }
-
-        response = requests.get(api_url, headers=headers, params=querystring)
+        # Step 1: Request the converted link from the API
+        logger.info(f"Requesting conversion for: {url}")
+        response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
         
         if response.status_code != 200:
-            logger.error(f"RapidAPI failed ({response.status_code}): {response.text}")
-            return jsonify({"error": f"API Error {response.status_code}"}), 500
+            logger.error(f"Converter Error: {response.text}")
+            return jsonify({"error": "Conversion service is busy. Please try in 10 seconds."}), 500
 
         result_data = response.json()
-        audio_url = None
-        contents = result_data.get("contents", [])
-        
-        if contents:
-            audios = contents[0].get("audios", [])
-            if audios:
-                audio_url = audios[0].get("url")
-            else:
-                videos = contents[0].get("videos", [])
-                if videos:
-                    audio_url = videos[0].get("url")
+        # Note: Check if the key is 'link', 'download_url', or 'url' in the Example Responses
+        download_url = result_data.get("link") or result_data.get("download_url") or result_data.get("url")
 
-        if not audio_url:
-            return jsonify({"error": "No download link found"}), 500
+        if not download_url:
+            logger.error(f"Full API Response: {result_data}")
+            return jsonify({"error": "Could not generate download link"}), 500
 
-        # 🔥 FIX: Use custom headers to bypass 403 Forbidden Error
-        download_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Connection": "keep-alive",
-            "Referer": "https://www.youtube.com/"
-        }
-
-        # Download the actual file from the extracted link
-        with requests.get(audio_url, stream=True, headers=download_headers, timeout=30, allow_redirects=True) as r:
+        # Step 2: RELAY - Download the actual file to Render
+        # This link usually bypasses YouTube's 403 because it's hosted by the API provider
+        with requests.get(download_url, stream=True, timeout=60) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+                for chunk in r.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+                    f.write(chunk)
 
-        # Send for AI Prediction
+        # Step 3: ANALYZE - Send the local file to Hugging Face
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to process audio link"}), 500
     finally:
+        # AUTO-DELETE
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Auto-cleanup complete.")
+            logger.info("Cleanup complete.")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
