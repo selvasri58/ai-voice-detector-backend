@@ -96,53 +96,58 @@ def analyze_url():
             "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
-        # 1. Get the download URL
-        logger.info(f"Requesting conversion for: {url}")
-        response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
-        response.raise_for_status()
-        download_url = response.json().get("downloadUrl")
-
-        if not download_url:
-            return jsonify({"error": "Could not generate download link"}), 500
-
-        # 2. ROBUST DOWNLOAD: Retry loop to handle IncompleteRead
         max_retries = 3
         success = False
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"Download attempt {attempt + 1}...")
-                with requests.get(download_url, stream=True, timeout=45) as r:
+                logger.info(f"Attempt {attempt + 1}: Requesting fresh conversion link...")
+                # 🔥 MOVE THIS INSIDE: Get a new link for every attempt
+                response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
+                response.raise_for_status()
+                download_url = response.json().get("downloadUrl")
+
+                if not download_url:
+                    logger.warning("API returned no downloadUrl, retrying...")
+                    continue
+
+                logger.info(f"Attempt {attempt + 1}: Downloading file...")
+                # Use a session for better connection stability
+                session = requests.Session()
+                with session.get(download_url, stream=True, timeout=45) as r:
                     r.raise_for_status()
                     with open(raw_audio_path, 'wb') as f:
-                        # Use very small chunks (32KB) to keep the connection stable
                         for chunk in r.iter_content(chunk_size=32 * 1024):
                             if chunk:
                                 f.write(chunk)
-                success = True
-                break # Exit loop if download finished successfully
+                
+                # Check if we actually got data
+                if os.path.getsize(raw_audio_path) > 0:
+                    success = True
+                    break
+                
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    raise e # Re-raise error if last attempt fails
+                    raise e
 
         if not success:
-            return jsonify({"error": "File transfer failed after multiple attempts"}), 500
+            return jsonify({"error": "Extraction failed after multiple attempts"}), 500
         
-        # 3. Convert to WAV for AI processing
+        # 3. Convert to WAV
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
             [ffmpeg_path, "-y", "-i", raw_audio_path, "-ac", "1", "-ar", "16000", final_wav_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
         )
 
-        # 4. Analyze with Hugging Face
+        # 4. Analyze
         result = query_huggingface(final_wav_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Server is busy. Please try again in a moment."}), 500
+        return jsonify({"error": "The video is taking too long to process. Please try a shorter video."}), 500
     finally:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
