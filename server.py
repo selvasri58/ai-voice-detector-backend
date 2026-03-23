@@ -89,63 +89,72 @@ def analyze_url():
     temp_file_path = os.path.join(temp_dir, "cloud_audio.wav")
 
     try:
-        # 🔥 UPDATED ENDPOINT: Based on your v3 screenshot
-        api_url = "https://social-media-video-downloader.p.rapidapi.com/v3/video/details"
+        # 🔥 CORRECTED ENDPOINT for the SMVD v3 API
+        api_url = "https://social-media-video-downloader.p.rapidapi.com/youtube/v3/video/details"
         
+        # We need the Video ID for this specific endpoint
+        video_id = extract_video_id(url)
+        if not video_id:
+            return jsonify({"error": "Could not extract YouTube ID"}), 400
+
         headers = {
             "X-RapidAPI-Key": rapid_api_key,
             "X-RapidAPI-Host": "social-media-video-downloader.p.rapidapi.com"
         }
 
-        # This API usually takes the full URL as a parameter
-        querystring = {"url": url}
+        # Based on your screenshot, it needs videoId and optional renderableFormats
+        querystring = {
+            "videoId": video_id,
+            "renderableFormats": "720p" # This triggers the link generation
+        }
 
         response = requests.get(api_url, headers=headers, params=querystring)
         
         if response.status_code != 200:
             logger.error(f"RapidAPI failed ({response.status_code}): {response.text}")
-            return jsonify({"error": f"API Error: {response.status_code}"}), 500
+            return jsonify({"error": f"API Error {response.status_code}: {response.text}"}), 500
 
         result_data = response.json()
+        
+        # 🔎 NEW PARSING for the SMVD v3 'contents' structure
+        # This API usually puts links in result_data['contents'][0]['videoStreams']
+        # or result_data['contents'][0]['audioStreams']
         audio_url = None
+        contents = result_data.get("contents", [])
         
-        # 🔎 NEW PARSING LOGIC: Look inside the 'medias' or 'links' array
-        # v3 APIs often return a list of objects with 'url' and 'quality'
-        medias = result_data.get("medias", result_data.get("links", []))
-        
-        for media in medias:
-            # We want the audio/mp3 version
-            if media.get("extension") == "mp3" or media.get("type") == "audio":
-                audio_url = media.get("url")
-                break
-        
-        # Fallback to the first video link if no audio-only found
-        if not audio_url and medias:
-            audio_url = medias[0].get("url")
+        if contents:
+            # Check for audios first
+            audios = contents[0].get("audios", [])
+            if audios:
+                audio_url = audios[0].get("url")
+            else:
+                # Fallback to videos
+                videos = contents[0].get("videos", [])
+                if videos:
+                    audio_url = videos[0].get("url")
 
         if not audio_url:
-            logger.error(f"Full API Response: {result_data}")
-            return jsonify({"error": "Could not find a download link in the response"}), 500
+            logger.error(f"Full Response: {result_data}")
+            return jsonify({"error": "No download link found in API response"}), 500
 
-        # Download the file to Render's cloud storage
+        # Download to cloud
         with requests.get(audio_url, stream=True) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # Handoff to Hugging Face
+        # Analyze
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Internal processing failed"}), 500
+        return jsonify({"error": str(e)}), 500
     finally:
-        # 🗑️ AUTO-DELETE: Ensures no files are left on the cloud
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Cleanup complete.")
+            logger.info("Auto-cleanup complete.")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
