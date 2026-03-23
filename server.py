@@ -74,7 +74,6 @@ import io
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    temp_dir = None
     if not os.environ.get("HF_TOKEN"):
         return jsonify({"error": "HF_TOKEN missing"}), 500
 
@@ -83,10 +82,6 @@ def analyze_url():
     rapid_api_key = os.environ.get("RAPID_API_KEY") 
 
     try:
-        temp_dir = tempfile.mkdtemp()
-        raw_path = os.path.join(temp_dir, "raw_audio.mp3")
-        final_wav_path = os.path.join(temp_dir, "final_audio.wav")
-        
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
         headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
 
@@ -95,46 +90,30 @@ def analyze_url():
         download_url = response.json().get("downloadUrl")
 
         if not download_url:
-            return jsonify({"error": "Bridge link generation failed"}), 500
+            return jsonify({"error": "Bridge link failed"}), 500
 
-        # 2. THE STITCHER: Download in two separate segments to bypass the 394KB cutoff
-        logger.info("Starting Segmented Stitching...")
+        # 🔥 THE DIRECT PIPE FIX: 
+        # We don't download. We point Hugging Face directly to the Bridge URL.
+        # This lets Hugging Face's high-speed network handle the IncompleteRead.
+        logger.info("Redirecting stream to Hugging Face...")
         
-        with open(raw_path, "wb") as f:
-            # Segment 1: 0 to 300KB
-            headers_1 = {"Range": "bytes=0-300000"}
-            r1 = requests.get(download_url, headers=headers_1, timeout=30)
-            if r1.status_code in [200, 206]:
-                f.write(r1.content)
-                logger.info("Segment 1 (0-300KB) saved.")
-            
-            # Segment 2: 300KB to the end
-            headers_2 = {"Range": "bytes=300001-"}
-            r2 = requests.get(download_url, headers=headers_2, timeout=30)
-            if r2.status_code in [200, 206]:
-                f.write(r2.content)
-                logger.info("Segment 2 (300KB+) saved.")
-
-        # Check if we actually got a usable file size
-        if os.path.getsize(raw_path) < 10000:
-             return jsonify({"error": "Segment stitching failed"}), 500
-
-        # 3. Convert and Analyze
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-        subprocess.run(
-            [ffmpeg_path, "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", final_wav_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        client = Client(HF_SPACE_URL, token=os.environ.get("HF_TOKEN"))
+        
+        # We use the URL itself as the handle_file source
+        result = client.predict(
+            audio_path=download_url, # Pass the URL directly!
+            api_name="/analyze_audio"
         )
-
-        result = query_huggingface(final_wav_path)
+        
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Stitcher Error: {str(e)}")
-        return jsonify({"error": "Network limit reached. Try a shorter video."}), 500
-    finally:
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            logger.info("Auto-cleanup complete.")
+        logger.error(f"Stream Error: {str(e)}")
+        return jsonify({"error": "AI Space is busy. Please try again."}), 500
+    
+
+
+
+    
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
