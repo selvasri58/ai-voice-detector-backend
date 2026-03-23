@@ -72,86 +72,63 @@ def analyze_audio():
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    if not os.environ.get("HF_TOKEN"):
-        return jsonify({"error": "HF_TOKEN missing"}), 500
-
-    data = request.get_json()
-    if not data or "url" not in data:
-        return jsonify({"error": "URL missing"}), 400
-
-    url = data["url"]
-    rapid_api_key = os.environ.get("RAPID_API_KEY") 
-    
-    if not rapid_api_key:
-        return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
-
-    temp_dir = tempfile.mkdtemp()
-    raw_audio_path = os.path.join(temp_dir, "raw_audio")
-    final_wav_path = os.path.join(temp_dir, "final_audio.wav")
+    # ... (Standard URL & Token Checks) ...
 
     try:
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
-        headers = {
-            "x-rapidapi-key": rapid_api_key,
-            "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
-        }
+        headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
 
-        max_retries = 3
-        success = False
+        # 1. Get the Link
+        response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
+        download_url = response.json().get("downloadUrl")
+
+        if not download_url:
+            return jsonify({"error": "No download link"}), 500
+
+        # 🔥 THE "STITCHING" FIX: Download in small chunks using Range Headers
+        # We download 100KB at a time to stay under the 177KB crash limit
+        chunk_size = 100 * 1024 
+        current_byte = 0
         
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Attempt {attempt + 1}: Requesting fresh conversion link...")
-                # 🔥 MOVE THIS INSIDE: Get a new link for every attempt
-                response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
-                response.raise_for_status()
-                download_url = response.json().get("downloadUrl")
-
-                if not download_url:
-                    logger.warning("API returned no downloadUrl, retrying...")
-                    continue
-
-                logger.info(f"Attempt {attempt + 1}: Downloading file...")
-                # Use a session for better connection stability
-                session = requests.Session()
-                with session.get(download_url, stream=True, timeout=45) as r:
-                    r.raise_for_status()
-                    with open(raw_audio_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=32 * 1024):
-                            if chunk:
-                                f.write(chunk)
+        with open(raw_audio_path, 'wb') as f:
+            while True:
+                # Tell the server exactly which bytes we want
+                range_header = {"Range": f"bytes={current_byte}-{current_byte + chunk_size - 1}"}
+                logger.info(f"Downloading range: {current_byte} - {current_byte + chunk_size}")
                 
-                # Check if we actually got data
-                if os.path.getsize(raw_audio_path) > 0:
-                    success = True
+                r = requests.get(download_url, headers=range_header, timeout=30)
+                
+                # 206 means "Partial Content" - this is what we want!
+                if r.status_code not in [200, 206]:
                     break
                 
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    raise e
+                f.write(r.content)
+                
+                # If the server sent less than we asked for, we've reached the end
+                if len(r.content) < chunk_size:
+                    break
+                    
+                current_byte += len(r.content)
 
-        if not success:
-            return jsonify({"error": "Extraction failed after multiple attempts"}), 500
-        
-        # 3. Convert to WAV
+        # 2. Check if we actually got a usable file
+        if os.path.getsize(raw_audio_path) < 1000:
+            return jsonify({"error": "File transfer was blocked by the bridge"}), 500
+
+        # 3. Convert and Analyze
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
             [ffmpeg_path, "-y", "-i", raw_audio_path, "-ac", "1", "-ar", "16000", final_wav_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
         )
 
-        # 4. Analyze
         result = query_huggingface(final_wav_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "The video is taking too long to process. Please try a shorter video."}), 500
+        return jsonify({"error": "Extraction failed due to network limits"}), 500
     finally:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Auto-cleanup complete.")
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
