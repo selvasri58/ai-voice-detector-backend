@@ -74,77 +74,78 @@ import io
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
+    temp_dir = None
     if not os.environ.get("HF_TOKEN"):
         return jsonify({"error": "HF_TOKEN missing"}), 500
 
     data = request.get_json()
-    if not data or "url" not in data:
-        return jsonify({"error": "URL missing"}), 400
-
-    url = data["url"]
+    url = data.get("url")
     rapid_api_key = os.environ.get("RAPID_API_KEY") 
-    
-    temp_dir = tempfile.mkdtemp()
-    # Path for the raw download and the final processed wav
-    raw_audio_path = os.path.join(temp_dir, "downloaded_audio")
-    final_wav_path = os.path.join(temp_dir, "processed_audio.wav")
 
     try:
-        # 1. Get the Link from RapidAPI
-        api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
-        headers = {
-            "x-rapidapi-key": rapid_api_key,
-            "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
-        }
+        temp_dir = tempfile.mkdtemp()
+        raw_audio_path = os.path.join(temp_dir, "downloaded_audio")
+        final_wav_path = os.path.join(temp_dir, "processed_audio.wav")
 
-        logger.info(f"Step 1: Fetching link for {url}")
+        # 1. Get the Link
+        api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
+        headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
         download_url = response.json().get("downloadUrl")
 
         if not download_url:
             return jsonify({"error": "Could not get download link"}), 500
 
-        # 2. Local Download with Browser-Headers (to avoid 403)
-        logger.info("Step 2: Downloading file to Render...")
-        download_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36",
-            "Referer": "https://www.youtube.com/"
-        }
+        # 2. RESUMABLE DOWNLOAD: Loop until the file is complete
+        downloaded_bytes = 0
+        max_retries = 5
         
-        with requests.get(download_url, headers=download_headers, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(raw_audio_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+        for attempt in range(max_retries):
+            try:
+                # Ask for only the remaining bytes
+                resume_header = {
+                    "Range": f"bytes={downloaded_bytes}-",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36"
+                }
+                
+                with requests.get(download_url, headers=resume_header, stream=True, timeout=30) as r:
+                    # 206 means "Partial Content", which is good for resuming
+                    if r.status_code not in [200, 206]:
+                        break
+                        
+                    with open(raw_audio_path, 'ab') as f: # 'ab' means Append Binary
+                        for chunk in r.iter_content(chunk_size=128 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_bytes += len(chunk)
+                
+                # If we got here without an exception, the file is likely done
+                break 
+            except (requests.exceptions.RequestException, Exception) as e:
+                logger.warning(f"Connection dropped at {downloaded_bytes} bytes. Retrying... ({attempt+1})")
+                if attempt == max_retries - 1:
+                    raise e
 
-        # 3. Standardization (Convert to Mono 16kHz WAV)
-        # This makes the file compatible with almost any AI model
-        logger.info("Step 3: Converting to standard WAV format...")
+        # 3. Standardization & Analysis
+        if os.path.getsize(raw_audio_path) < 10000:
+            return jsonify({"error": "File transfer incomplete"}), 500
+
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
             [ffmpeg_path, "-y", "-i", raw_audio_path, "-ac", "1", "-ar", "16000", final_wav_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
         )
 
-        # 4. Analyze Local File
-        logger.info("Step 4: Sending processed file to AI...")
         client = Client(HF_SPACE_URL, token=os.environ.get("HF_TOKEN"))
-        result = client.predict(
-            audio_path=handle_file(final_wav_path),
-            api_name="/analyze_audio"
-        )
-        
+        result = client.predict(audio_path=handle_file(final_wav_path), api_name="/analyze_audio")
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Processing Error: {str(e)}")
-        return jsonify({"error": "Failed to analyze video. Please try again."}), 500
+        logger.error(f"Final Error: {str(e)}")
+        return jsonify({"error": "Network instability. Please try again."}), 500
     finally:
-        if os.path.exists(temp_dir):
+        if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Cleanup complete.")
-
 
     
 if __name__ == "__main__":
