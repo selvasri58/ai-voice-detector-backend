@@ -82,53 +82,54 @@ def analyze_url():
     url = data["url"]
     rapid_key = os.environ.get("RAPID_API_KEY") 
     
-    if not rapid_key:
-        return jsonify({"error": "RAPID_API_KEY missing in Render settings"}), 500
-
     temp_dir = tempfile.mkdtemp()
-    temp_file_path = os.path.join(temp_dir, "cloud_audio.mp3")
+    # We save as raw first, then convert to wav for Hugging Face
+    raw_audio_path = os.path.join(temp_dir, "raw_audio")
+    final_wav_path = os.path.join(temp_dir, "final_audio.wav")
 
     try:
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
-        
         headers = {
-            "x-rapidapi-key": rapid_key,
+            "x-rapidapi-key": rapid_api_key,
             "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
-        logger.info(f"Requesting conversion for: {url}")
+        # 1. Get the download URL
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
-        
-        if response.status_code != 200:
-            return jsonify({"error": "Converter service error"}), 500
-
-        result_data = response.json()
-        
-        # 🔥 FIXED LINE: Using 'downloadUrl' to match your specific API response
-        download_url = result_data.get("downloadUrl")
+        response.raise_for_status()
+        download_url = response.json().get("downloadUrl")
 
         if not download_url:
-            logger.error(f"Key mismatch! Full API Response: {result_data}")
-            return jsonify({"error": "Could not find 'downloadUrl' in API response"}), 500
+            return jsonify({"error": "Could not generate download link"}), 500
 
-        # Download the file to Render
-        with requests.get(download_url, stream=True, timeout=60) as r:
+        # 2. STABLE DOWNLOAD: Using a session to prevent IncompleteRead
+        session = requests.Session()
+        with session.get(download_url, stream=True, timeout=60) as r:
             r.raise_for_status()
-            with open(temp_file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
+            with open(raw_audio_path, 'wb') as f:
+                # Smaller chunks (128KB) are more stable for cloud transfers
+                for chunk in r.iter_content(chunk_size=128 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        
+        # 3. CONVERT TO WAV: Ensures compatibility with your AI model
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run(
+            [ffmpeg_path, "-y", "-i", raw_audio_path, "-ac", "1", "-ar", "16000", final_wav_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
 
-        # Send to Hugging Face
-        result = query_huggingface(temp_file_path)
+        # 4. ANALYZE
+        result = query_huggingface(final_wav_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Failed to process audio"}), 500
+        return jsonify({"error": "Connection interrupted. Please try again."}), 500
     finally:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-            logger.info("Cleanup complete.")
+            logger.info("Auto-cleanup complete.")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
