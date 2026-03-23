@@ -89,7 +89,6 @@ def analyze_url():
     temp_file_path = os.path.join(temp_dir, "cloud_audio.mp3")
 
     try:
-        # 🔥 THE NEW BRIDGE: Pointing to your YouTube MP3 API
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
         
         headers = {
@@ -97,39 +96,36 @@ def analyze_url():
             "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
-        # Step 1: Request the converted link from the API
         logger.info(f"Requesting conversion for: {url}")
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
         
         if response.status_code != 200:
-            logger.error(f"Converter Error: {response.text}")
-            return jsonify({"error": "Conversion service is busy. Please try in 10 seconds."}), 500
+            return jsonify({"error": "Converter service error"}), 500
 
         result_data = response.json()
-        # Note: Check if the key is 'link', 'download_url', or 'url' in the Example Responses
-        download_url = result_data.get("link") or result_data.get("download_url") or result_data.get("url")
+        
+        # 🔥 FIXED LINE: Using 'downloadUrl' to match your specific API response
+        download_url = result_data.get("downloadUrl")
 
         if not download_url:
-            logger.error(f"Full API Response: {result_data}")
-            return jsonify({"error": "Could not generate download link"}), 500
+            logger.error(f"Key mismatch! Full API Response: {result_data}")
+            return jsonify({"error": "Could not find 'downloadUrl' in API response"}), 500
 
-        # Step 2: RELAY - Download the actual file to Render
-        # This link usually bypasses YouTube's 403 because it's hosted by the API provider
+        # Download the file to Render
         with requests.get(download_url, stream=True, timeout=60) as r:
             r.raise_for_status()
             with open(temp_file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
 
-        # Step 3: ANALYZE - Send the local file to Hugging Face
+        # Send to Hugging Face
         result = query_huggingface(temp_file_path)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Failed to process audio link"}), 500
+        return jsonify({"error": "Failed to process audio"}), 500
     finally:
-        # AUTO-DELETE
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             logger.info("Cleanup complete.")
