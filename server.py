@@ -87,59 +87,54 @@ def analyze_url():
         raw_path = os.path.join(temp_dir, "raw_audio.mp3")
         final_wav_path = os.path.join(temp_dir, "final_audio.wav")
         
-        # 1. Get the Link from your current YouTube MP3 API
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
-        headers = {
-            "x-rapidapi-key": rapid_api_key,
-            "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
-        }
+        headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
 
-        logger.info(f"Requesting link for: {url}")
+        # 1. Get the Link
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
         download_url = response.json().get("downloadUrl")
 
         if not download_url:
-            return jsonify({"error": "Bridge did not provide a link"}), 500
+            return jsonify({"error": "Bridge link generation failed"}), 500
 
-        # 2. THE PERSISTENT PIPE: Force the download to finish
-        logger.info("Starting Persistent Pipe download...")
+        # 2. THE STITCHER: Download in two separate segments to bypass the 394KB cutoff
+        logger.info("Starting Segmented Stitching...")
         
-        # We use a specific 'Accept-Encoding' to prevent the server from cutting us off
-        download_headers = {"Accept-Encoding": "identity"}
-        
-        # Using a raw stream to bypass the 'IncompleteRead' logic of the requests library
-        with requests.get(download_url, headers=download_headers, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(raw_path, "wb") as f:
-                # We use a very large buffer to 'catch' the data before the connection drops
-                for chunk in r.iter_content(chunk_size=1024 * 512): # 512KB chunks
-                    if chunk:
-                        f.write(chunk)
-        
-        # Check if we got enough data (at least 50KB)
-        if os.path.getsize(raw_path) < 50000:
-             return jsonify({"error": "File was too small/incomplete"}), 500
+        with open(raw_path, "wb") as f:
+            # Segment 1: 0 to 300KB
+            headers_1 = {"Range": "bytes=0-300000"}
+            r1 = requests.get(download_url, headers=headers_1, timeout=30)
+            if r1.status_code in [200, 206]:
+                f.write(r1.content)
+                logger.info("Segment 1 (0-300KB) saved.")
+            
+            # Segment 2: 300KB to the end
+            headers_2 = {"Range": "bytes=300001-"}
+            r2 = requests.get(download_url, headers=headers_2, timeout=30)
+            if r2.status_code in [200, 206]:
+                f.write(r2.content)
+                logger.info("Segment 2 (300KB+) saved.")
 
-        # 3. Convert to WAV for AI processing
+        # Check if we actually got a usable file size
+        if os.path.getsize(raw_path) < 10000:
+             return jsonify({"error": "Segment stitching failed"}), 500
+
+        # 3. Convert and Analyze
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
             [ffmpeg_path, "-y", "-i", raw_path, "-ac", "1", "-ar", "16000", final_wav_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
         )
 
-        # 4. Analyze
         result = query_huggingface(final_wav_path)
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Pipe Error: {str(e)}")
-        # If it's the specific 177k error, we tell the user to try once more 
-        # because the file is now 'cached' on the bridge server
-        return jsonify({"error": "Connection reset. Please try the same link again."}), 500
+        logger.error(f"Stitcher Error: {str(e)}")
+        return jsonify({"error": "Network limit reached. Try a shorter video."}), 500
     finally:
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             logger.info("Auto-cleanup complete.")
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
