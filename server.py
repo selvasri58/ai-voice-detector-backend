@@ -80,7 +80,6 @@ def analyze_url():
         return jsonify({"error": "URL missing"}), 400
 
     url = data["url"]
-    # 🔥 FIXED: Using 'rapid_api_key' consistently throughout the function
     rapid_api_key = os.environ.get("RAPID_API_KEY") 
     
     if not rapid_api_key:
@@ -93,7 +92,7 @@ def analyze_url():
     try:
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
         headers = {
-            "x-rapidapi-key": rapid_api_key, # Matches the variable above
+            "x-rapidapi-key": rapid_api_key,
             "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"
         }
 
@@ -106,14 +105,29 @@ def analyze_url():
         if not download_url:
             return jsonify({"error": "Could not generate download link"}), 500
 
-        # 2. Stable Download
-        session = requests.Session()
-        with session.get(download_url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(raw_audio_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=128 * 1024):
-                    if chunk:
-                        f.write(chunk)
+        # 2. ROBUST DOWNLOAD: Retry loop to handle IncompleteRead
+        max_retries = 3
+        success = False
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Download attempt {attempt + 1}...")
+                with requests.get(download_url, stream=True, timeout=45) as r:
+                    r.raise_for_status()
+                    with open(raw_audio_path, 'wb') as f:
+                        # Use very small chunks (32KB) to keep the connection stable
+                        for chunk in r.iter_content(chunk_size=32 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                success = True
+                break # Exit loop if download finished successfully
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    raise e # Re-raise error if last attempt fails
+
+        if not success:
+            return jsonify({"error": "File transfer failed after multiple attempts"}), 500
         
         # 3. Convert to WAV for AI processing
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
@@ -128,7 +142,7 @@ def analyze_url():
 
     except Exception as e:
         logger.error(f"System Error: {str(e)}")
-        return jsonify({"error": "Processing failed. Please try again."}), 500
+        return jsonify({"error": "Server is busy. Please try again in a moment."}), 500
     finally:
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
