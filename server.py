@@ -74,42 +74,35 @@ import io
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
-    if not os.environ.get("HF_TOKEN"):
-        return jsonify({"error": "HF_TOKEN missing"}), 500
-
-    data = request.get_json()
-    url = data.get("url")
-    rapid_api_key = os.environ.get("RAPID_API_KEY") 
+    # ... (Token and URL checks stay the same) ...
 
     try:
         api_url = "https://youtube-mp310.p.rapidapi.com/download/mp3"
         headers = {"x-rapidapi-key": rapid_api_key, "x-rapidapi-host": "youtube-mp310.p.rapidapi.com"}
 
-        # 1. Get the Link
+        # 1. Get the Link from RapidAPI
         response = requests.get(api_url, headers=headers, params={"url": url}, timeout=30)
         download_url = response.json().get("downloadUrl")
 
         if not download_url:
             return jsonify({"error": "Bridge link failed"}), 500
 
-        # 🔥 THE DIRECT PIPE FIX: 
-        # We don't download. We point Hugging Face directly to the Bridge URL.
-        # This lets Hugging Face's high-speed network handle the IncompleteRead.
-        logger.info("Redirecting stream to Hugging Face...")
+        logger.info(f"Handing remote URL to AI: {download_url}")
         
+        # 2. THE FIX: Wrap the URL in handle_file()
+        # This tells Hugging Face: "Go fetch this file yourself"
         client = Client(HF_SPACE_URL, token=os.environ.get("HF_TOKEN"))
         
-        # We use the URL itself as the handle_file source
         result = client.predict(
-            audio_path=download_url, # Pass the URL directly!
+            audio_path=handle_file(download_url), # 🔥 CRITICAL CHANGE
             api_name="/analyze_audio"
         )
         
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Stream Error: {str(e)}")
-        return jsonify({"error": "AI Space is busy. Please try again."}), 500
+        logger.error(f"AI Processing Error: {str(e)}")
+        return jsonify({"error": "AI model failed to process the remote link."}), 500
     
 
 
